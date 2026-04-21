@@ -60,4 +60,4 @@ The PDF is generated in the current working directory.
 
 ## Author
 
-Jesús Fernández — [jfg.sec](https://www.instagram.com/jfg.sec)
+**Jesús Fernández** — [jfg.sec](https://www.instagram.com/jfg.sec) — [LinkedIn](https://www.linkedin.com/in/jesus-fernandez-gervasi)
