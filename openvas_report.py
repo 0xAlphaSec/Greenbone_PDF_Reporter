@@ -158,12 +158,10 @@ def parsear_xml(ruta_xml, min_severity=0.0):
         if host_elem is not None and host_elem.text:
             host = host_elem.text.strip()
         else:
-            host = "Desconocido"
-        
-        meta["hosts"].add(host)
+            host = "Unknown"
 
         # Nombre de la vulnerabilidad
-        nombre = result.findtext("name") or "Sin nombre"
+        nombre = result.findtext("name") or "No name"
 
         # Puerto
         puerto = result.findtext("port") or "N/A"
@@ -178,7 +176,7 @@ def parsear_xml(ruta_xml, min_severity=0.0):
             if sol_elem is not None and sol_elem.text:
                 solucion = limpiar_html(sol_elem.text)
         if not solucion:
-            solucion = limpiar_html(result.findtext(".//solution") or "") or "No disponible"
+            solucion = limpiar_html(result.findtext(".//solution") or "") or "Not available"
 
         # Descripción corta (summary del campo tags)
         descripcion = ""
@@ -203,12 +201,30 @@ def parsear_xml(ruta_xml, min_severity=0.0):
             "threat": threat,
         })
 
+    # Extraer los hosts escaneados desde los bloques <host> hijos directos del <report>.
+    # Esta es la fuente correcta: incluye todos los hosts que el scanner tocó,
+    # incluso los que no produjeron ninguna vulnerabilidad con la severidad mínima aplicada.
+    # Leer solo de <result> produce un conteo incorrecto cuando hay hosts limpios.
+    report_node = root.find("report")
+    if report_node is None:
+        report_node = root
+    meta["hosts"] = {}  # dict ip -> hostname (puede ser "")
+    for host_el in report_node.findall("host"):
+        ip = host_el.findtext("ip")
+        if ip:
+            ip = ip.strip()
+            # El hostname puede venir en <detail><n>hostname</n><v>...</v></detail>
+            hostname = ""
+            for detail in host_el.findall("detail"):
+                if detail.findtext("name") == "hostname":
+                    hostname = detail.findtext("value") or ""
+                    break
+            meta["hosts"][ip] = hostname
+
     # Ordenar de mayor a menor severidad
     vulns.sort(key=lambda v: v["severity"], reverse=True)
 
     meta["total_vulns"] = len(vulns)
-
-    # Intentar obtener la fecha del escaneo
     fecha_elem = root.find(".//scan_start")
     if fecha_elem is None:
         fecha_elem = root.find(".//creation_time")
@@ -226,13 +242,13 @@ def clasificar_severidad(score):
     Devuelve (etiqueta, color) según la escala CVSS estándar.
     """
     if score >= 9.0:
-        return "CRÍTICA", colors.HexColor("#7B0000")
+        return "CRITICAL", colors.HexColor("#7B0000")
     elif score >= 7.0:
-        return "ALTA", colors.HexColor("#CC0000")
+        return "HIGH", colors.HexColor("#CC0000")
     elif score >= 4.0:
-        return "MEDIA", colors.HexColor("#E67300")
+        return "MEDIUM", colors.HexColor("#E67300")
     elif score > 0.0:
-        return "BAJA", colors.HexColor("#2E7D32")
+        return "LOW", colors.HexColor("#2E7D32")
     else:
         return "INFO", colors.HexColor("#1565C0")
     
@@ -314,8 +330,8 @@ def generar_pdf(meta, vulns, ruta_salida, min_severity):
 
     # Portada/cabecera
     story.append(Spacer(1, 1*cm))
-    story.append(Paragraph("Reporte de Vulnerabilidades", estilo_titulo))
-    story.append(Paragraph("Generado desde exportación XML de OpenVAS/Greenbone", estilo_subtitulo))
+    story.append(Paragraph("Vulnerability report", estilo_titulo))
+    story.append(Paragraph("Generated from OpenVAS/Greenbone XML export", estilo_subtitulo))
     story.append(Spacer(1, 0.3*cm))
     story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#1A237E")))
     story.append(Spacer(1, 0.5*cm))
@@ -325,12 +341,11 @@ def generar_pdf(meta, vulns, ruta_salida, min_severity):
     hosts_str = ", ".join(sorted(meta["hosts"])) or "N/A"
 
     resumen_data = [
-        ["Archivo de entrada", meta["archivo"]],
-        ["Fecha de generación", fecha_gen],
-        ["Fecha del escaneo", meta["fecha_escaneo"] or "No disponible"],
-        ["Hosts escaneados", hosts_str],
-        ["Severidad mínima aplicada", f">= {min_severity}"],
-        ["Vulnerabilidades incluídas", str(meta["total_vulns"])],
+        ["Input file", meta["archivo"]],
+        ["Generation date", fecha_gen],
+        ["Scan date", meta["fecha_escaneo"] or "Not available"],
+        ["Minimum severity applied", f">= {min_severity}"],
+        ["Vulnerabilities included", str(meta["total_vulns"])],
     ]
 
     tabla_resumen = Table(resumen_data, colWidths=[5*cm, 12*cm])
@@ -351,21 +366,20 @@ def generar_pdf(meta, vulns, ruta_salida, min_severity):
 
 
     # Tabla de distribución por severidad
-    conteo = {"CRITICA": 0, "ALTA": 0, "MEDIA": 0, "BAJA": 0, "INFO": 0}
+    conteo = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     for v in vulns:
         etiq, _ = clasificar_severidad(v["severity"])
-        etiq_key = etiq.replace("Í", "I").replace("É", "E")
-        if etiq_key in conteo:
-            conteo[etiq_key] += 1
+        if etiq in conteo:
+            conteo[etiq] += 1
 
-    story.append(Paragraph("Distribución por severidad", estilo_seccion))
+    story.append(Paragraph("Severity distribution", estilo_seccion))
 
-    dist_data = [["Nivel", "Rango CVSS", "Cantidad"]]
+    dist_data = [["Level", "CVSS Range", "Count"]]
     niveles = [
-        ("CRITICA", "9.0 - 10.0", colors.HexColor("#7B0000")),
-        ("ALTA", "7.0 - 8.9", colors.HexColor("#CC0000")),
-        ("MEDIA", "4.0 - 6.9", colors.HexColor("#E67300")),
-        ("BAJA", "0.1 - 3.9", colors.HexColor("#2E7D32")),
+        ("CRITICAL", "9.0 - 10.0", colors.HexColor("#7B0000")),
+        ("HIGH", "7.0 - 8.9", colors.HexColor("#CC0000")),
+        ("MEDIUM", "4.0 - 6.9", colors.HexColor("#E67300")),
+        ("LOW", "0.1 - 3.9", colors.HexColor("#2E7D32")),
         ("INFO", "0.0", colors.HexColor("#1565C0")),
     ]
 
@@ -392,65 +406,144 @@ def generar_pdf(meta, vulns, ruta_salida, min_severity):
         ]))
     
     story.append(tabla_dist)
+    story.append(Spacer(1, 0.8*cm))
+
+    # Calcular conteo de vulnerabilidades por host desde la lista filtrada
+    vulns_por_host = {}
+    for v in vulns:
+        vulns_por_host[v["host"]] = vulns_por_host.get(v["host"], 0) + 1
+
+    story.append(Paragraph("Scanned hosts", estilo_seccion))
+
+    hosts_data = [["Host", "Hostname", "Vulnerabilities"]]
+    for ip in sorted(meta["hosts"].keys()):
+        hostname = meta["hosts"].get(ip, "") or "—"
+        count = str(vulns_por_host.get(ip, 0))
+        hosts_data.append([ip, hostname, count])
+
+    # Calcular ancho de columna Host según el texto más largo (mínimo 4cm, máximo 6cm)
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    max_ip_w = max((stringWidth(row[0], "Helvetica", 9) for row in hosts_data[1:]), default=0)
+    col_ip_w = max(4*cm, min(max_ip_w + 0.6*cm, 6*cm))
+
+    max_hn_w = max((stringWidth(row[1], "Helvetica", 9) for row in hosts_data[1:]), default=0)
+    col_hn_w = max(4*cm, min(max_hn_w + 0.6*cm, 11*cm))
+
+    col_vuln_w = 17*cm - col_ip_w - col_hn_w
+
+    tabla_hosts = Table(hosts_data, colWidths=[col_ip_w, col_hn_w, col_vuln_w])
+    tabla_hosts.setStyle(TableStyle([
+        ("BACKGROUND",     (0, 0), (-1, 0), colors.HexColor("#1A237E")),
+        ("TEXTCOLOR",      (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",       (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",       (0, 0), (-1, -1), 9),
+        ("GRID",           (0, 0), (-1, -1), 0.5, colors.HexColor("#CFD8DC")),
+        ("ALIGN",          (2, 0), (2, -1), "CENTER"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
+        ("PADDING",        (0, 0), (-1, -1), 6),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+
+    story.append(tabla_hosts)
     story.append(PageBreak())
 
-    # Detalle de vulnerabilidades
-    story.append(Paragraph("Detalle de Vulnerabilidades", estilo_seccion))
+    # Detalle de vulnerabilidades agrupado por host, dentro de cada host por severidad
+    story.append(Paragraph("Vulnerability Details", estilo_seccion))
     story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#C5CAE9")))
     story.append(Spacer(1, 0.3*cm))
 
+    # Estilo para el título de grupo de host
+    estilo_host_grupo = ParagraphStyle(
+        "HostGrupo",
+        parent=estilos["Normal"],
+        fontSize=11,
+        fontName="Helvetica-Bold",
+        textColor=colors.white,
+        spaceAfter=4,
+        spaceBefore=6,
+    )
 
-    for i, vuln in enumerate(vulns, start=1):
-        etiqueta, color_sev = clasificar_severidad(vuln["severity"])
+    # Agrupar vulns por host manteniendo orden alfabético de host
+    # Dentro de cada host, las vulns ya vienen ordenadas por severidad desc desde parsear_xml
+    from collections import defaultdict
+    grupos = defaultdict(list)
+    for v in vulns:
+        grupos[v["host"]].append(v)
 
-        # Cabecera de cada vuln
-        badge_color = color_sev.hexval() if hasattr(color_sev, 'hexval') else "#333333"
-        cabecera_data = [[
-            Paragraph(f"{i}. {vuln['nombre']}", estilo_nombre_vuln),
+    vuln_num = 1  # Numeración global de vulnerabilidades
+    for host in sorted(grupos.keys()):
+        vulns_host = grupos[host]  # Ya ordenadas por severidad desc
+
+        # Cabecera de grupo host: fondo azul oscuro, texto blanco
+        host_header_data = [[
+            Paragraph(f"Host: {host}", estilo_host_grupo),
             Paragraph(
-                f'<font color="{badge_color}"><b>{etiqueta} {vuln["severity"]:.1f}</b></font>',
-                ParagraphStyle("badge", parent=estilos["Normal"],
-                               fontSize=10, alignment=2)
+                f'<font color="white">{len(vulns_host)} vulnerabilit{"y" if len(vulns_host) == 1 else "ies"}</font>',
+                ParagraphStyle("host_count", parent=estilos["Normal"],
+                               fontSize=10, alignment=2, textColor=colors.white)
             )
         ]]
-        tabla_cabecera = Table(cabecera_data, colWidths=[12.5*cm, 4.5*cm])
-        tabla_cabecera.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ECEFF1")),
-            ("LINEBELOW",  (0, 0), (-1, 0), 1.5, color_sev),
-            ("PADDING",    (0, 0), (-1, -1), 6),
+        tabla_host_header = Table(host_header_data, colWidths=[12.5*cm, 4.5*cm])
+        tabla_host_header.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1A237E")),
+            ("PADDING",    (0, 0), (-1, -1), 8),
             ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
         ]))
-        story.append(tabla_cabecera)
+        story.append(tabla_host_header)
         story.append(Spacer(1, 0.2*cm))
 
-        # Cuerpo: host, puerto, descripción, solución
-        story.append(Paragraph("Host afectado:", estilo_etiqueta))
-        story.append(Paragraph(f"{vuln['host']} | Puerto: {vuln['puerto']}", estilo_cuerpo))
+        for vuln in vulns_host:
+            etiqueta, color_sev = clasificar_severidad(vuln["severity"])
 
-        if vuln["descripcion"]:
-            story.append(Paragraph("Descripción:", estilo_etiqueta))
-            # Truncar descripciones muy largas para mantener el reporte legible
-            desc = vuln["descripcion"]
-            if len(desc) > 600:
-                desc = desc[:597] + "..."
-            story.append(Paragraph(desc, estilo_cuerpo))
+            # Cabecera de cada vuln
+            badge_color = color_sev.hexval() if hasattr(color_sev, 'hexval') else "#333333"
+            cabecera_data = [[
+                Paragraph(f"{vuln_num}. {vuln['nombre']}", estilo_nombre_vuln),
+                Paragraph(
+                    f'<font color="{badge_color}"><b>{etiqueta} {vuln["severity"]:.1f}</b></font>',
+                    ParagraphStyle("badge", parent=estilos["Normal"],
+                                   fontSize=10, alignment=2)
+                )
+            ]]
+            tabla_cabecera = Table(cabecera_data, colWidths=[12.5*cm, 4.5*cm])
+            tabla_cabecera.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ECEFF1")),
+                ("LINEBELOW",  (0, 0), (-1, 0), 1.5, color_sev),
+                ("PADDING",    (0, 0), (-1, -1), 6),
+                ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            story.append(tabla_cabecera)
+            story.append(Spacer(1, 0.2*cm))
 
-        story.append(Paragraph("Solución recomendada:", estilo_etiqueta))
-        sol = vuln["solucion"] or "No disponible"
-        if len(sol) > 800:
-            sol = sol[:797] + "..."
-        story.append(Paragraph(sol, estilo_cuerpo))
+            # Cuerpo: puerto, descripción, solución (host ya está en el grupo)
+            story.append(Paragraph("Port:", estilo_etiqueta))
+            story.append(Paragraph(vuln['puerto'], estilo_cuerpo))
 
-        story.append(Spacer(1, 0.5*cm))
+            if vuln["descripcion"]:
+                story.append(Paragraph("Description:", estilo_etiqueta))
+                # Truncar descripciones muy largas para mantener el reporte legible
+                desc = vuln["descripcion"]
+                if len(desc) > 600:
+                    desc = desc[:597] + "..."
+                story.append(Paragraph(desc, estilo_cuerpo))
 
-        # Salto de página cada 3 vulns
+            story.append(Paragraph("Recommended solution:", estilo_etiqueta))
+            sol = vuln["solucion"] or "Not available"
+            if len(sol) > 800:
+                sol = sol[:797] + "..."
+            story.append(Paragraph(sol, estilo_cuerpo))
+
+            story.append(Spacer(1, 0.4*cm))
+            vuln_num += 1
+
+        story.append(Spacer(1, 0.4*cm))
 
     # Pie del documento
 
     story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#CFD8DC")))
     story.append(Spacer(1, 0.2*cm))
     story.append(Paragraph(
-        f"Reporte generado el {fecha_gen} - Basado en exportación XML de OpenVAS/Greenbone",
+        f"Report generated on {fecha_gen} - Based on OpenVAS/Greenbone XML export",
         ParagraphStyle("pie", parent=estilos["Normal"],
         fontSize=7, textColor=colors.HexColor("#90A4AE"),
         alignment=1)
